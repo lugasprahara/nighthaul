@@ -1,85 +1,122 @@
-// All sound is synthesised with WebAudio: no audio files, nothing to load.
-// One master chain, a shared noise buffer, and a function per game sound.
-// Distances are handled by callers passing a gain (bots' shots are quieter).
+// NIGHTHAUL's sound is 100% synthesis: no audio files exist. A small
+// voice kit (oscillator blips and filtered noise hits with exponential
+// envelopes) feeds a master compressor; a feedback-delay "harbour echo"
+// send gives the big sounds — explosions, the plant/defuse stingers —
+// the sense of a large hard-surfaced yard. Callers pass gains for
+// distance; this module only shapes tone.
 
 export function createAudio() {
   const ctx = new (window.AudioContext || window.webkitAudioContext)();
-  const master = ctx.createGain();
-  master.gain.value = 0.5;
+
+  const master = ctx.createDynamicsCompressor();
+  master.threshold.value = -16;
+  master.ratio.value = 5;
+  const bus = ctx.createGain();
+  bus.gain.value = 0.55;
+  bus.connect(master);
   master.connect(ctx.destination);
 
-  const noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 1.2, ctx.sampleRate);
-  const data = noiseBuf.getChannelData(0);
-  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+  // Harbour echo: a short feedback delay on a send bus.
+  const echo = ctx.createDelay(0.6);
+  echo.delayTime.value = 0.19;
+  const echoFb = ctx.createGain();
+  echoFb.gain.value = 0.32;
+  const echoWet = ctx.createGain();
+  echoWet.gain.value = 0.2;
+  echo.connect(echoFb).connect(echo);
+  echo.connect(echoWet).connect(bus);
 
-  function noise({ dur = 0.2, freq = 1200, q = 0.8, gain = 0.5, type = 'lowpass', sweepTo = null, at = 0 }) {
+  // Shared white-noise source material.
+  const noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 1.2, ctx.sampleRate);
+  const nd = noiseBuf.getChannelData(0);
+  for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+
+  // A filtered noise hit: the workhorse for gunfire, cloth, metal, air.
+  function noiseHit({ at = 0, dur = 0.2, type = 'lowpass', freq = 1000, end = null, q = 0.8, gain = 0.5, echoSend = 0 }) {
     const t = ctx.currentTime + at;
     const src = ctx.createBufferSource();
     src.buffer = noiseBuf;
     src.loop = true;
-    const filter = ctx.createBiquadFilter();
-    filter.type = type;
-    filter.frequency.setValueAtTime(freq, t);
-    if (sweepTo !== null) filter.frequency.exponentialRampToValueAtTime(Math.max(30, sweepTo), t + dur);
-    filter.Q.value = q;
+    src.playbackRate.value = 0.9 + Math.random() * 0.2;
+    const f = ctx.createBiquadFilter();
+    f.type = type;
+    f.Q.value = q;
+    f.frequency.setValueAtTime(freq, t);
+    if (end !== null) f.frequency.exponentialRampToValueAtTime(Math.max(28, end), t + dur);
     const g = ctx.createGain();
     g.gain.setValueAtTime(gain, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
-    src.connect(filter).connect(g).connect(master);
+    g.gain.exponentialRampToValueAtTime(0.0012, t + dur);
+    src.connect(f).connect(g).connect(bus);
+    if (echoSend > 0) {
+      const send = ctx.createGain();
+      send.gain.value = echoSend;
+      g.connect(send).connect(echo);
+    }
     src.start(t);
     src.stop(t + dur + 0.05);
   }
 
-  function tone({ freq = 440, dur = 0.12, gain = 0.25, type = 'square', slideTo = null, at = 0 }) {
+  // An oscillator blip with pitch glide: beeps, ticks, confirmation tones.
+  function blip({ at = 0, freq = 440, glide = null, dur = 0.12, type = 'square', gain = 0.22, echoSend = 0 }) {
     const t = ctx.currentTime + at;
-    const osc = ctx.createOscillator();
-    osc.type = type;
-    osc.frequency.setValueAtTime(freq, t);
-    if (slideTo !== null) osc.frequency.exponentialRampToValueAtTime(Math.max(20, slideTo), t + dur);
+    const o = ctx.createOscillator();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t);
+    if (glide !== null) o.frequency.exponentialRampToValueAtTime(Math.max(18, glide), t + dur);
     const g = ctx.createGain();
     g.gain.setValueAtTime(gain, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
-    osc.connect(g).connect(master);
-    osc.start(t);
-    osc.stop(t + dur + 0.05);
-  }
-
-  function shot(kind, gain = 1) {
-    // A crack (band-passed noise) over a body thump (falling lowpass noise).
-    if (kind === 'sniper') {
-      noise({ dur: 0.5, freq: 2600, q: 0.4, gain: 0.85 * gain, type: 'bandpass', sweepTo: 300 });
-      noise({ dur: 0.4, freq: 500, gain: 0.9 * gain, sweepTo: 60 });
-      tone({ freq: 130, dur: 0.3, gain: 0.4 * gain, type: 'triangle', slideTo: 40 });
-    } else if (kind === 'shotgun') {
-      noise({ dur: 0.32, freq: 1500, q: 0.4, gain: 0.9 * gain, type: 'bandpass', sweepTo: 200 });
-      noise({ dur: 0.3, freq: 420, gain: 0.9 * gain, sweepTo: 55 });
-    } else if (kind === 'smg') {
-      noise({ dur: 0.13, freq: 2100, q: 0.6, gain: 0.55 * gain, type: 'bandpass', sweepTo: 500 });
-      noise({ dur: 0.12, freq: 700, gain: 0.55 * gain, sweepTo: 120 });
-    } else if (kind === 'pistol') {
-      noise({ dur: 0.16, freq: 1900, q: 0.6, gain: 0.6 * gain, type: 'bandpass', sweepTo: 420 });
-      noise({ dur: 0.14, freq: 620, gain: 0.6 * gain, sweepTo: 100 });
-    } else {
-      // rifle
-      noise({ dur: 0.2, freq: 1700, q: 0.5, gain: 0.75 * gain, type: 'bandpass', sweepTo: 320 });
-      noise({ dur: 0.2, freq: 520, gain: 0.75 * gain, sweepTo: 70 });
+    g.gain.exponentialRampToValueAtTime(0.0012, t + dur);
+    o.connect(g).connect(bus);
+    if (echoSend > 0) {
+      const send = ctx.createGain();
+      send.gain.value = echoSend;
+      g.connect(send).connect(echo);
     }
+    o.start(t);
+    o.stop(t + dur + 0.05);
   }
 
-  let ambientOn = false;
+  // A short note ladder for round stingers.
+  function ladder(notes, { step = 0.11, type = 'triangle', gain = 0.2, dur = 0.17 } = {}) {
+    notes.forEach((f, i) => blip({ freq: f, dur, type, gain, at: i * step, echoSend: 0.25 }));
+  }
+
+  // Gunfire, voiced per weapon class: a snap transient over a chest thump.
+  function shot(kind, gain = 1) {
+    const v = {
+      pistol: { snap: 2000, body: 640, dur: 0.15, level: 0.6 },
+      smg: { snap: 2200, body: 720, dur: 0.12, level: 0.55 },
+      rifle: { snap: 1750, body: 520, dur: 0.2, level: 0.75 },
+      shotgun: { snap: 1500, body: 430, dur: 0.32, level: 0.9 },
+      sniper: { snap: 2700, body: 480, dur: 0.5, level: 0.85 },
+    }[kind] ?? { snap: 1750, body: 520, dur: 0.2, level: 0.75 };
+    noiseHit({ dur: v.dur * 0.7, type: 'bandpass', freq: v.snap, end: v.snap * 0.22, q: 0.6, gain: v.level * gain, echoSend: 0.18 });
+    noiseHit({ dur: v.dur, freq: v.body, end: 55, gain: v.level * gain });
+    if (kind === 'sniper') blip({ freq: 130, glide: 38, dur: 0.3, type: 'triangle', gain: 0.4 * gain });
+  }
+
+  let ambientStarted = false;
   function ambient() {
-    if (ambientOn) return;
-    ambientOn = true;
+    if (ambientStarted) return;
+    ambientStarted = true;
+    // Night water and wind against the hulls: looped noise through a
+    // slowly wandering lowpass.
     const src = ctx.createBufferSource();
     src.buffer = noiseBuf;
     src.loop = true;
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.value = 320;
+    const f = ctx.createBiquadFilter();
+    f.type = 'lowpass';
+    f.frequency.value = 300;
     const g = ctx.createGain();
-    g.gain.value = 0.035;
-    src.connect(filter).connect(g).connect(master);
+    g.gain.value = 0.032;
+    const lfo = ctx.createOscillator();
+    lfo.frequency.value = 0.07;
+    const lfoGain = ctx.createGain();
+    lfoGain.gain.value = 90;
+    lfo.connect(lfoGain).connect(f.frequency);
+    src.connect(f).connect(g).connect(bus);
     src.start();
+    lfo.start();
   }
 
   return {
@@ -87,63 +124,49 @@ export function createAudio() {
     resume() { if (ctx.state === 'suspended') ctx.resume(); },
     ambient,
     shot,
-    dryFire() { tone({ freq: 1900, dur: 0.04, gain: 0.12, type: 'square' }); },
+    dryFire() { blip({ freq: 1750, dur: 0.045, gain: 0.11 }); },
     reload() {
-      noise({ dur: 0.06, freq: 900, gain: 0.25, type: 'bandpass' });
-      noise({ dur: 0.06, freq: 600, gain: 0.3, type: 'bandpass', at: 0.32 });
-      tone({ freq: 320, dur: 0.05, gain: 0.18, type: 'square', at: 0.55 });
+      // Mag out, mag in, bolt: three mechanical ticks.
+      noiseHit({ dur: 0.05, type: 'bandpass', freq: 850, gain: 0.22 });
+      noiseHit({ dur: 0.05, type: 'bandpass', freq: 560, gain: 0.26, at: 0.3 });
+      blip({ freq: 300, dur: 0.05, gain: 0.16, at: 0.52 });
     },
     hit(head = false) {
-      tone({ freq: head ? 1560 : 1050, dur: 0.06, gain: 0.22, type: 'sine' });
-      if (head) tone({ freq: 2100, dur: 0.09, gain: 0.16, type: 'sine', at: 0.03 });
+      blip({ freq: head ? 1520 : 1020, dur: 0.06, type: 'sine', gain: 0.2 });
+      if (head) blip({ freq: 2050, dur: 0.09, type: 'sine', gain: 0.14, at: 0.03 });
     },
-    kill() {
-      tone({ freq: 660, dur: 0.09, gain: 0.2, type: 'triangle' });
-      tone({ freq: 990, dur: 0.14, gain: 0.2, type: 'triangle', at: 0.07 });
-    },
-    hurt() { noise({ dur: 0.14, freq: 300, gain: 0.4, sweepTo: 90 }); },
+    kill() { ladder([660, 990], { step: 0.07, dur: 0.13, gain: 0.18 }); },
+    hurt() { noiseHit({ dur: 0.13, freq: 280, end: 85, gain: 0.38 }); },
     footstep(run = true) {
-      noise({ dur: 0.07, freq: run ? 500 : 380, gain: run ? 0.10 : 0.05, sweepTo: 140 });
+      noiseHit({ dur: 0.06, freq: run ? 470 : 350, end: 130, gain: run ? 0.09 : 0.045 });
     },
-    jump() { noise({ dur: 0.08, freq: 700, gain: 0.06, sweepTo: 300 }); },
-    land() { noise({ dur: 0.1, freq: 350, gain: 0.14, sweepTo: 100 }); },
-    plantBeep(final = false) { tone({ freq: final ? 1560 : 1180, dur: final ? 0.22 : 0.08, gain: 0.22, type: 'sine' }); },
-    planted() {
-      tone({ freq: 880, dur: 0.1, gain: 0.22, type: 'sine' });
-      tone({ freq: 1320, dur: 0.18, gain: 0.22, type: 'sine', at: 0.1 });
+    jump() { noiseHit({ dur: 0.07, freq: 680, end: 280, gain: 0.05 }); },
+    land() { noiseHit({ dur: 0.09, freq: 330, end: 95, gain: 0.13 }); },
+    plantBeep(final = false) {
+      blip({ freq: final ? 1560 : 1175, dur: final ? 0.22 : 0.08, type: 'sine', gain: 0.2, echoSend: 0.2 });
     },
-    defused() {
-      tone({ freq: 1320, dur: 0.1, gain: 0.22, type: 'sine' });
-      tone({ freq: 880, dur: 0.2, gain: 0.22, type: 'sine', at: 0.1 });
-    },
+    planted() { ladder([880, 1318], { step: 0.1, type: 'sine', gain: 0.2, dur: 0.16 }); },
+    defused() { ladder([1318, 880], { step: 0.1, type: 'sine', gain: 0.2, dur: 0.18 }); },
     explosion(gain = 1) {
-      noise({ dur: 1.1, freq: 900, gain: 0.95 * gain, sweepTo: 40 });
-      tone({ freq: 90, dur: 0.9, gain: 0.7 * gain, type: 'sine', slideTo: 30 });
+      noiseHit({ dur: 1.15, freq: 850, end: 38, gain: 0.95 * gain, echoSend: 0.5 });
+      blip({ freq: 88, glide: 29, dur: 0.9, type: 'sine', gain: 0.65 * gain });
     },
     frag(gain = 1) {
-      noise({ dur: 0.55, freq: 1100, gain: 0.8 * gain, sweepTo: 60 });
-      tone({ freq: 120, dur: 0.4, gain: 0.5 * gain, type: 'sine', slideTo: 35 });
+      noiseHit({ dur: 0.55, freq: 1050, end: 55, gain: 0.78 * gain, echoSend: 0.4 });
+      blip({ freq: 118, glide: 34, dur: 0.4, type: 'sine', gain: 0.48 * gain });
     },
     flashPop() {
-      tone({ freq: 2400, dur: 0.25, gain: 0.3, type: 'sine', slideTo: 3000 });
-      noise({ dur: 0.2, freq: 3000, gain: 0.25, type: 'highpass' });
+      blip({ freq: 2350, glide: 2900, dur: 0.24, type: 'sine', gain: 0.26 });
+      noiseHit({ dur: 0.18, type: 'highpass', freq: 2800, gain: 0.22 });
     },
-    smokePop() { noise({ dur: 0.5, freq: 800, gain: 0.2, type: 'bandpass', sweepTo: 200 }); },
-    throwWhoosh() { noise({ dur: 0.18, freq: 900, gain: 0.1, type: 'bandpass', sweepTo: 1600 }); },
-    buy() {
-      tone({ freq: 740, dur: 0.06, gain: 0.18, type: 'square' });
-      tone({ freq: 1180, dur: 0.1, gain: 0.18, type: 'square', at: 0.06 });
-    },
-    deny() { tone({ freq: 220, dur: 0.12, gain: 0.18, type: 'square' }); },
-    roundWin() {
-      [523, 659, 784].forEach((f, i) => tone({ freq: f, dur: 0.16, gain: 0.2, type: 'triangle', at: i * 0.11 }));
-    },
-    roundLose() {
-      [392, 330, 262].forEach((f, i) => tone({ freq: f, dur: 0.18, gain: 0.2, type: 'triangle', at: i * 0.12 }));
-    },
+    smokePop() { noiseHit({ dur: 0.5, type: 'bandpass', freq: 760, end: 190, gain: 0.18 }); },
+    throwWhoosh() { noiseHit({ dur: 0.17, type: 'bandpass', freq: 880, end: 1550, gain: 0.09 }); },
+    buy() { ladder([740, 1175], { step: 0.06, dur: 0.09, gain: 0.16 }); },
+    deny() { blip({ freq: 210, dur: 0.12, gain: 0.17 }); },
+    roundWin() { ladder([523, 659, 784], { step: 0.11, dur: 0.16, gain: 0.19 }); },
+    roundLose() { ladder([392, 330, 262], { step: 0.12, dur: 0.18, gain: 0.19 }); },
     matchEnd(win) {
-      const seq = win ? [523, 659, 784, 1046] : [440, 392, 330, 262];
-      seq.forEach((f, i) => tone({ freq: f, dur: 0.24, gain: 0.22, type: 'triangle', at: i * 0.15 }));
+      ladder(win ? [523, 659, 784, 1046] : [440, 392, 330, 262], { step: 0.15, dur: 0.24, gain: 0.21 });
     },
   };
 }

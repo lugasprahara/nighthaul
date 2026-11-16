@@ -1,91 +1,95 @@
-// Keyboard and mouse state, pointer lock included. Everything reads input
-// through this module; nothing else touches window events.
+// Keyboard and mouse, gathered in one place. Every other module asks
+// this one what the player is doing; nothing else listens to window
+// events. Held state lives in a Set; presses are queued so a consumer can
+// ask "did this go down since I last asked?" exactly once per press;
+// mouse look accumulates until someone takes it.
 
 export function createInput(canvas) {
-  const keys = new Set();
-  const pressed = new Set(); // keys that went down since the last consume()
-  let lookDX = 0;
-  let lookDY = 0;
-  let firing = false;
-  let aiming = false;
-  let locked = false;
-  let clicked = false; // a fresh mouse press since the last consume()
+  const held = new Set();
+  const pressQueue = new Set();
+  let lookX = 0;
+  let lookY = 0;
+  let triggerHeld = false;
+  let scopeHeld = false;
+  let triggerClicked = false;
+  let lockedNow = false;
 
   addEventListener('keydown', (e) => {
     if (e.repeat) return;
-    keys.add(e.code);
-    pressed.add(e.code);
-    if (['Space', 'Tab', 'KeyB'].includes(e.code)) e.preventDefault();
+    held.add(e.code);
+    pressQueue.add(e.code);
+    if (e.code === 'Space' || e.code === 'Tab' || e.code === 'KeyB') e.preventDefault();
   });
-  addEventListener('keyup', (e) => keys.delete(e.code));
+  addEventListener('keyup', (e) => held.delete(e.code));
   addEventListener('blur', () => {
-    keys.clear();
-    firing = false;
-    aiming = false;
+    held.clear();
+    triggerHeld = false;
+    scopeHeld = false;
   });
 
   canvas.addEventListener('mousedown', (e) => {
-    if (!locked) return;
+    if (!lockedNow) return;
     if (e.button === 0) {
-      firing = true;
-      clicked = true;
+      triggerHeld = true;
+      triggerClicked = true;
+    } else if (e.button === 2) {
+      scopeHeld = true;
     }
-    if (e.button === 2) aiming = true;
   });
   addEventListener('mouseup', (e) => {
-    if (e.button === 0) firing = false;
-    if (e.button === 2) aiming = false;
+    if (e.button === 0) triggerHeld = false;
+    if (e.button === 2) scopeHeld = false;
   });
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
   document.addEventListener('pointerlockchange', () => {
-    locked = document.pointerLockElement === canvas;
-    if (!locked) {
-      firing = false;
-      aiming = false;
+    lockedNow = document.pointerLockElement === canvas;
+    if (!lockedNow) {
+      triggerHeld = false;
+      scopeHeld = false;
     }
   });
   document.addEventListener('mousemove', (e) => {
-    if (!locked) return;
-    lookDX += e.movementX;
-    lookDY += e.movementY;
+    if (!lockedNow) return;
+    lookX += e.movementX;
+    lookY += e.movementY;
   });
 
   return {
-    keys,
-    get locked() { return locked; },
-    get firing() { return firing; },
-    get aiming() { return aiming; },
+    keys: held,
+    get locked() { return lockedNow; },
+    get firing() { return triggerHeld; },
+    get aiming() { return scopeHeld; },
+
     lock() { canvas.requestPointerLock(); },
     unlock() { document.exitPointerLock(); },
-    // Read-and-clear the accumulated look movement (call once per frame).
+
+    // Drain the accumulated mouse movement.
     takeLook() {
-      const dx = lookDX;
-      const dy = lookDY;
-      lookDX = 0;
-      lookDY = 0;
-      return { dx, dy };
+      const out = { dx: lookX, dy: lookY };
+      lookX = 0;
+      lookY = 0;
+      return out;
     },
-    // Was this code pressed since the last call?
+    // True exactly once per physical press of `code`.
     wasPressed(code) {
-      if (!pressed.has(code)) return false;
-      pressed.delete(code);
+      if (!pressQueue.has(code)) return false;
+      pressQueue.delete(code);
       return true;
     },
+    // True exactly once per fresh left-click.
     takeClick() {
-      const c = clicked;
-      clicked = false;
+      const c = triggerClicked;
+      triggerClicked = false;
       return c;
     },
-    down(code) { return keys.has(code); },
-    // Movement axes from WASD: x = strafe right, z = forward.
+    down(code) { return held.has(code); },
+    // WASD/arrows as axes: x strafes right, z pushes forward.
     moveAxes() {
-      let x = 0;
-      let z = 0;
-      if (keys.has('KeyW') || keys.has('ArrowUp')) z += 1;
-      if (keys.has('KeyS') || keys.has('ArrowDown')) z -= 1;
-      if (keys.has('KeyD') || keys.has('ArrowRight')) x += 1;
-      if (keys.has('KeyA') || keys.has('ArrowLeft')) x -= 1;
+      const x = (held.has('KeyD') || held.has('ArrowRight') ? 1 : 0)
+        - (held.has('KeyA') || held.has('ArrowLeft') ? 1 : 0);
+      const z = (held.has('KeyW') || held.has('ArrowUp') ? 1 : 0)
+        - (held.has('KeyS') || held.has('ArrowDown') ? 1 : 0);
       return { x, z };
     },
   };

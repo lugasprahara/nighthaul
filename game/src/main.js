@@ -1,7 +1,10 @@
-// NIGHTHAUL — boot and the main loop. Owns the renderer, the camera and
-// the one shared game-state object `g` that every module reads. Simulation
-// runs on a fixed 60 Hz step; rendering happens every animation frame and
-// only reads state, so the game plays the same at any refresh rate.
+// NIGHTHAUL — boot and the main loop.
+//
+// This module owns the renderer, the camera, and the one shared state
+// object `g` that every other module reads. The simulation runs on a
+// fixed 60 Hz step and rendering only reads state, so the game plays
+// identically at any refresh rate. A `?shot=` query parameter stages
+// deterministic scenes for the entry's screenshots.
 
 import * as THREE from 'three';
 import { buildMaterials } from './palette.js';
@@ -18,8 +21,10 @@ import { createHud } from './hud.js';
 import { raycastWorld } from './physics.js';
 import { resolveShot } from './weapons.js';
 
-const params = new URLSearchParams(location.search);
-const shotMode = params.get('shot'); // menu | buy | action | plant (screenshots)
+const shotMode = new URLSearchParams(location.search).get('shot'); // menu|buy|action|plant
+
+// ---------------------------------------------------------------------------
+// Renderer, scene, camera.
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -35,14 +40,17 @@ const camera = new THREE.PerspectiveCamera(74, innerWidth / innerHeight, 0.05, 4
 camera.rotation.order = 'YXZ';
 scene.add(camera);
 
-// A soft fill light rides with the camera so the viewmodel gun and whatever
-// the player is looking at up close never fall to pure black at dusk.
+// A warm fill rides with the camera so the viewmodel and close-up
+// geometry never fall to pure black in the night palette.
 const fill = new THREE.PointLight(0xffe2bb, 2.6, 5, 1.7);
 fill.position.set(0.35, 0.05, -0.6);
 camera.add(fill);
 
 const mats = buildMaterials();
 buildWorld(scene, mats);
+
+// ---------------------------------------------------------------------------
+// The shared state object and its subsystems.
 
 const g = {
   time: 0,
@@ -58,13 +66,14 @@ const g = {
   raycastWorld,
   resolveShot,
   shotMode,
+  calls: null, // team coordination clocks, (re)built by the bot planner
 };
 g.input = createInput(renderer.domElement);
 g.audio = createAudio();
 g.fx = new FX(scene);
-if (shotMode) g.fx.tracerLife = 0.4; // hold tracers so a still frame can catch them
+if (shotMode) g.fx.tracerLife = 0.4; // hold tracers so a still frame catches them
 
-// --- Cast: the player plus nine bots, five a side.
+// The cast: the player plus nine bots, five a side.
 const player = createActor('sentinel', 'YOU', true);
 g.player = player;
 g.actors.push(player);
@@ -85,7 +94,7 @@ g.match = createMatch(g);
 g.hud = createHud(g);
 window.__game = g; // dev handle: the screenshot/soak tooling reads state here
 
-// After the half-time swap, bot bodies need their new team's colours.
+// After the halftime swap, bot bodies need their new team's colours.
 g.onTeamsChanged = () => {
   for (const bot of g.bots) {
     scene.remove(bot.mesh.group);
@@ -94,7 +103,9 @@ g.onTeamsChanged = () => {
   }
 };
 
-// --- Start / pause overlay flow.
+// ---------------------------------------------------------------------------
+// Start / pause overlay flow.
+
 const overlay = document.getElementById('overlay');
 const playBtn = document.getElementById('play');
 const ovTitle = document.getElementById('ov-title');
@@ -120,9 +131,9 @@ playBtn.addEventListener('click', () => {
   }
 });
 document.addEventListener('pointerlockchange', () => {
-  if (!document.pointerLockElement && started && !g.hud.buyOpen && !shotMode
-    && (g.match.phase === 'buy' || g.match.phase === 'live' || g.match.phase === 'roundEnd')) {
-    ovTitle.innerHTML = 'PAUSED';
+  const inRound = ['buy', 'live', 'roundEnd', 'halftime'].includes(g.match.phase);
+  if (!document.pointerLockElement && started && !g.hud.buyOpen && !shotMode && inRound) {
+    ovTitle.textContent = 'PAUSED';
     playBtn.textContent = 'Resume';
     overlay.hidden = false;
   }
@@ -133,10 +144,12 @@ renderer.domElement.addEventListener('click', () => {
   }
 });
 
-// --- Screenshot poses: deterministic scenes for the entry's screenshots.
-function poseShot() {
-  const m = g.match;
+// ---------------------------------------------------------------------------
+// Screenshot poses: deterministic stagings for the four entry shots.
+
+function stageShot() {
   if (shotMode === 'menu') return; // the idle orbit camera is the shot
+  const m = g.match;
   g.startMatch();
   overlay.hidden = true;
   document.getElementById('hud').hidden = false;
@@ -144,45 +157,50 @@ function poseShot() {
     g.hud.setBuy(true);
     return;
   }
-  // Skip the buy phase for the action poses.
+  // Action poses skip the buy window.
   m.phase = 'live';
   m.phaseAt = g.time;
   const p = g.player;
+  const place = (actor, x, z, yaw) => {
+    actor.x = x;
+    actor.z = z;
+    if (yaw !== undefined) actor.yaw = yaw;
+  };
   if (shotMode === 'action') {
-    p.x = 0; p.z = -3.4; p.yaw = 0.12; p.pitch = 0.01;
+    place(p, 0, -3.4);
+    p.yaw = 0.12;
+    p.pitch = 0.01;
     p.giveWeapon('vandal');
     p.current = 'primary';
     g.view.setWeapon(p.weapon().def);
-    const foes = g.bots.filter((b) => b.actor.team === 'runner');
-    const f0 = foes[0].actor;
-    f0.x = 1.8; f0.z = -12.5; f0.yaw = Math.PI;
-    const f1 = foes[1].actor;
-    f1.x = -3.4; f1.z = -10.8; f1.yaw = Math.PI - 0.4;
+    const foes = g.bots.filter((b) => b.actor.team === 'runner').map((b) => b.actor);
+    place(foes[0], 1.8, -12.5, Math.PI);
+    place(foes[1], -3.4, -10.8, Math.PI - 0.4);
     const mate = g.bots.find((b) => b.actor.team === 'sentinel').actor;
-    mate.x = -2.2; mate.z = -1.2; mate.yaw = -0.2;
+    place(mate, -2.2, -1.2, -0.2);
     for (const b of g.bots) b.mesh.group.position.set(b.actor.x, 0, b.actor.z);
-    // Trade fire once the round banner has cleared, so the captured frame
-    // has tracers and a muzzle flash mid-fight. (Sim time, not wall time:
-    // a software renderer may run slower than real time.)
+    // Trade fire once the round banner clears, timed in sim time (a
+    // software renderer may run slower than wall clock), so the frame
+    // catches tracers and muzzle flash mid-fight.
     const iv = setInterval(() => {
       if (g.time < 3.4) return;
       clearInterval(iv);
-      const bot = g.bots.find((b) => b.actor === f0);
+      const bot = g.bots.find((b) => b.actor === foes[0]);
       bot.target = p;
       bot.targetSince = -9;
       bot.aimErr = 0.01;
-      fireWeapon(g, f0, f0.weapon());
+      fireWeapon(g, foes[0], foes[0].weapon());
       fireWeapon(g, p, p.weapon());
       requestAnimationFrame(() => { window.__shotReady = true; });
     }, 90);
   } else if (shotMode === 'plant') {
     const carrier = g.bots.find((b) => b.actor.team === 'runner').actor;
     m.carrier = carrier;
-    carrier.x = 25.5; carrier.z = 8.6;
+    place(carrier, 25.5, 8.6);
     m.plantBomb(carrier);
     const guard = g.bots.filter((b) => b.actor.team === 'runner')[1].actor;
-    guard.x = 22.3; guard.z = 3.1; guard.yaw = 2.6;
-    p.x = 15.2; p.z = 6.4;
+    place(guard, 22.3, 3.1, 2.6);
+    place(p, 15.2, 6.4);
     p.yaw = Math.atan2(-(25 - p.x), -(6.5 - p.z));
     p.pitch = -0.02;
     for (const b of g.bots) b.mesh.group.position.set(b.actor.x, 0, b.actor.z);
@@ -190,35 +208,36 @@ function poseShot() {
   }
 }
 
-// --- Fixed-step simulation.
+// ---------------------------------------------------------------------------
+// Fixed-step simulation and the frame loop.
+
 const SIM_DT = 1 / 60;
 let acc = 0;
 let last = performance.now();
 let menuCamT = 0;
+let viewBob = { x: 0, y: 0 };
 
 function step(dt) {
   g.time += dt;
   g.match.step(dt);
-  if (g.match.phase !== 'idle') {
-    stepPlayer(g, dt);
-    if (!shotMode || shotMode === 'buy') {
-      for (const bot of g.bots) stepBot(g, bot, dt);
-    }
-    g.grenades.step(dt);
+  if (g.match.phase === 'idle') return;
+  stepPlayer(g, dt);
+  if (!shotMode || shotMode === 'buy') {
+    for (const bot of g.bots) stepBot(g, bot, dt);
   }
-  g.view.update(dt, g.player, g.player.speed2d > 0.6);
+  g.grenades.step(dt);
+  viewBob = g.view.update(dt, g.player, g.player.speed2d > 0.6);
 }
 
 function updateCamera(dt) {
   const p = g.player;
   if (g.match.phase === 'idle' || shotMode === 'menu') {
-    // Slow orbit over the yard for the menu backdrop.
+    // A slow orbit over the yard backs the menu.
     menuCamT += dt * 0.045;
     const r = 27;
     camera.position.set(Math.cos(menuCamT) * r, 10.5, Math.sin(menuCamT) * r);
     camera.lookAt(0, 0.5, 0);
-    camera.fov += (58 - camera.fov) * Math.min(1, dt * 3);
-    camera.updateProjectionMatrix();
+    easeFov(58, dt, 3);
     return;
   }
   if (p.alive) {
@@ -226,29 +245,30 @@ function updateCamera(dt) {
     g.shake = Math.max(0, g.shake - dt * 1.4);
     const sh = g.shake * g.shake * 0.05;
     camera.position.set(
-      eye.x + (Math.random() - 0.5) * sh,
-      eye.y + (Math.random() - 0.5) * sh,
+      eye.x + viewBob.x * 0.4 + (Math.random() - 0.5) * sh,
+      eye.y + viewBob.y + (Math.random() - 0.5) * sh,
       eye.z,
     );
     camera.rotation.set(p.pitch, p.yaw, 0);
   } else {
-    // Spectate the first living teammate from just behind their shoulder.
+    // Spectate a living teammate from just behind their shoulder.
     const mate = g.actors.find((a) => a.alive && a.team === p.team && !a.isPlayer)
       ?? g.actors.find((a) => a.alive && !a.isPlayer);
     if (mate) {
-      const back = { x: Math.sin(mate.yaw) * 3.4, z: Math.cos(mate.yaw) * 3.4 };
       camera.position.lerp(
-        new THREE.Vector3(mate.x + back.x, mate.y + 2.1, mate.z + back.z),
+        new THREE.Vector3(mate.x + Math.sin(mate.yaw) * 3.4, mate.y + 2.1, mate.z + Math.cos(mate.yaw) * 3.4),
         Math.min(1, dt * 5),
       );
       camera.lookAt(mate.x - Math.sin(mate.yaw) * 6, mate.y + 1.3, mate.z - Math.cos(mate.yaw) * 6);
     }
   }
-  const targetFov = g.scoped ? 74 / 3.2 : 74;
-  if (Math.abs(camera.fov - targetFov) > 0.05) {
-    camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 11);
-    camera.updateProjectionMatrix();
-  }
+  easeFov(g.scoped ? 74 / 3.2 : 74, dt, 11);
+}
+
+function easeFov(target, dt, rate) {
+  if (Math.abs(camera.fov - target) <= 0.05) return;
+  camera.fov += (target - camera.fov) * Math.min(1, dt * rate);
+  camera.updateProjectionMatrix();
 }
 
 function frame(nowMs) {
@@ -259,7 +279,7 @@ function frame(nowMs) {
   while (acc >= SIM_DT && steps < 10) {
     step(SIM_DT);
     acc -= SIM_DT;
-    steps++;
+    steps += 1;
   }
   if (steps === 10) acc = 0; // very slow frame: drop time rather than spiral
   g.fx.update(dtR);
@@ -276,7 +296,7 @@ addEventListener('resize', () => {
 });
 
 if (shotMode) {
-  poseShot();
+  stageShot();
   if (shotMode === 'menu' || shotMode === 'buy') {
     setTimeout(() => { window.__shotReady = true; }, 900);
   }

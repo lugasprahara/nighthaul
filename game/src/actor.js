@@ -1,22 +1,43 @@
-// One combatant: the human player or a bot. Shared state and rules live
-// here (health, armour, weapons carried, money, damage), so the player
-// controller and the bot brains only decide movement and shots.
+// A combatant. The player and every bot are actors: this module owns the
+// state they share — body, health, armour, carried weapons, money, score
+// line — and the rules that mutate it (round resets, taking damage). The
+// controllers (player.js, bots.js) only decide where an actor moves and
+// when it shoots; they never reach around these rules.
 
 import { WEAPONS } from './weapons.js';
 
-let nextId = 1;
+let issuedIds = 0;
+
+function freshWeapon(id) {
+  const def = WEAPONS[id];
+  return { def, mag: def.mag, reserve: def.reserve };
+}
+
+function refill(w) {
+  if (!w) return;
+  w.mag = w.def.mag;
+  w.reserve = w.def.reserve;
+}
 
 export function createActor(team, name, isPlayer = false) {
-  const a = {
-    id: nextId++,
+  const actor = {
+    id: ++issuedIds,
     team,
     name,
     isPlayer,
-    alive: true,
-    // Feet position and velocity (physics.moveBody works on these fields).
-    x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, grounded: true,
-    yaw: 0, pitch: 0,
+
+    // Body: feet position plus velocity, the exact shape physics.moveBody
+    // integrates. yaw/pitch are the facing (radians; yaw 0 looks along -z).
+    x: 0, y: 0, z: 0,
+    vx: 0, vy: 0, vz: 0,
+    grounded: true,
+    yaw: 0,
+    pitch: 0,
     crouched: false,
+    speed2d: 0,
+
+    // Vitals and kit.
+    alive: true,
     hp: 100,
     armor: false,
     helmet: false,
@@ -24,25 +45,30 @@ export function createActor(team, name, isPlayer = false) {
     money: 800,
     kills: 0,
     deaths: 0,
-    // Carried weapons: { def, mag, reserve } or null. current = slot name.
+
+    // Carried guns, keyed by slot; `current` names the slot in hand.
     primary: null,
     sidearm: null,
     current: 'sidearm',
     grenades: { frag: 0, flash: 0, smoke: 0 },
-    // Gunplay state.
+
+    // Gunplay clocks (all in g.time seconds).
     bloom: 0,
     lastShotAt: -9,
     nextShotAt: 0,
     reloading: false,
     reloadUntil: 0,
-    cycleUntil: 0, // bolt/pump weapons cannot fire again before this
+    cycleUntil: 0,
     switchUntil: 0,
-    speed2d: 0,
     blindUntil: 0,
-    // Set by match.js: called with (victim, killer, info) when this dies.
+    lastFrom: null,
+
+    // Wired by match.js: (victim, killer, info) when this actor dies.
     onDeath: null,
 
-    get pos() { return this; }, // actors double as their position {x, y, z}
+    // Actors pose as their own position vector for the physics and
+    // raycast helpers.
+    get pos() { return this; },
 
     eyeHeight() { return this.crouched ? 1.18 : 1.62; },
     eyeAt() { return { x: this.x, y: this.y + this.eyeHeight(), z: this.z }; },
@@ -53,13 +79,26 @@ export function createActor(team, name, isPlayer = false) {
     },
 
     giveWeapon(id) {
-      const def = WEAPONS[id];
-      const w = { def, mag: def.mag, reserve: def.reserve };
-      if (def.slot === 'primary') this.primary = w;
+      const w = freshWeapon(id);
+      if (w.def.slot === 'primary') this.primary = w;
       else this.sidearm = w;
       return w;
     },
 
+    // Strip back to the standard issue: a Nightowl and nothing else.
+    resetLoadout() {
+      this.primary = null;
+      this.sidearm = null;
+      this.giveWeapon('nightowl');
+      this.current = 'sidearm';
+      this.grenades = { frag: 0, flash: 0, smoke: 0 };
+      this.armor = false;
+      this.helmet = false;
+      this.armorHp = 0;
+    },
+
+    // Place the actor on its spawn for a new round. Guns and armour carry
+    // over (their magazines refill); health and gunplay state do not.
     resetForRound(spawn, faceYaw) {
       this.alive = true;
       this.x = spawn.x;
@@ -77,29 +116,15 @@ export function createActor(team, name, isPlayer = false) {
       this.reloading = false;
       this.reloadUntil = 0;
       this.cycleUntil = 0;
-      // Armour and weapons persist between rounds unless resetLoadout ran.
-      for (const w of [this.primary, this.sidearm]) {
-        if (w) {
-          w.mag = w.def.mag;
-          w.reserve = w.def.reserve;
-        }
-      }
+      refill(this.primary);
+      refill(this.sidearm);
       if (!this.sidearm) this.giveWeapon('nightowl');
       this.current = this.primary ? 'primary' : 'sidearm';
     },
 
-    resetLoadout() {
-      this.primary = null;
-      this.sidearm = null;
-      this.giveWeapon('nightowl');
-      this.current = 'sidearm';
-      this.grenades = { frag: 0, flash: 0, smoke: 0 };
-      this.armor = false;
-      this.helmet = false;
-      this.armorHp = 0;
-    },
-
-    // Returns true when this hit killed the actor.
+    // Apply damage; returns true when this hit is the killing one. Kill
+    // credit and the death hook run here so every damage source (bullets,
+    // frags, falls) scores the same way.
     takeDamage(amount, info = {}) {
       if (!this.alive) return false;
       this.hp -= amount;
@@ -107,14 +132,16 @@ export function createActor(team, name, isPlayer = false) {
       if (this.hp > 0) return false;
       this.hp = 0;
       this.alive = false;
-      this.deaths++;
-      if (info.from && info.from !== this) info.from.kills++;
-      if (this.onDeath) this.onDeath(this, info.from ?? null, info);
+      this.deaths += 1;
+      const killer = info.from ?? null;
+      if (killer && killer !== this) killer.kills += 1;
+      if (this.onDeath) this.onDeath(this, killer, info);
       return true;
     },
 
     blinded(now) { return now < this.blindUntil; },
   };
-  a.resetLoadout();
-  return a;
+
+  actor.resetLoadout();
+  return actor;
 }

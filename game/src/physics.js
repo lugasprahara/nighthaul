@@ -1,145 +1,145 @@
-// Shared physics: circle-vs-box collision on the ground plane, ground
-// heights for step-ups and landings, and ray-vs-box tests for bullets and
-// lines of sight. Plain math on the solids from mapdata.js; used by the
-// player, the bots and the weapons alike.
+// Shared physics for every body in the port: the player, the bots, and
+// the rays their guns fire. The world is a list of axis-aligned boxes
+// (mapdata's SOLIDS), so everything here is circle-vs-box on the ground
+// plane, step-up heights, and ray-vs-box slab tests. No state is kept:
+// callers own their positions and velocities.
 
 import { SOLIDS } from './mapdata.js';
 
-export const STEP = 0.62; // tallest ledge a body steps onto without jumping
-export const BODY_HEIGHT = 1.78;
+export const STEP = 0.62; // a ledge this high or lower is walked onto, not into
+export const BODY_HEIGHT = 1.78; // a standing body's vertical extent
 
-// Highest walkable top under (x, z) that a body standing at feetY can use.
-export function groundHeightAt(x, z, feetY) {
-  let g = 0;
-  for (const s of SOLIDS) {
-    if (x >= s.x0 && x <= s.x1 && z >= s.z0 && z <= s.z1) {
-      if (s.y1 <= feetY + STEP && s.y1 > g) g = s.y1;
-    }
-  }
-  return g;
+// Does a solid block a body whose feet are at y? Low tops are floors to
+// step onto; high bases (the dock canopy) pass overhead.
+function blocksBody(s, y) {
+  return s.y1 > y + STEP && s.y0 < y + BODY_HEIGHT;
 }
 
-// Push a circle (centre x/z, feet at y, radius r) out of every solid that
-// blocks a body of BODY_HEIGHT standing at that height. Mutates and returns
-// the {x, z} object passed in.
+// The highest walkable surface under (x, z) for feet currently at feetY.
+export function groundHeightAt(x, z, feetY) {
+  let top = 0;
+  for (const s of SOLIDS) {
+    if (x < s.x0 || x > s.x1 || z < s.z0 || z > s.z1) continue;
+    if (s.y1 <= feetY + STEP && s.y1 > top) top = s.y1;
+  }
+  return top;
+}
+
+// Resolve a circle (centre p.x/p.z, feet height y, radius r) against every
+// blocking solid. Mutates p and returns it.
 export function collideCircle(p, y, r) {
   for (const s of SOLIDS) {
-    if (s.y1 <= y + STEP) continue; // walkable top, not a wall
-    if (s.y0 >= y + BODY_HEIGHT) continue; // overhead (the dock canopy)
-    const nx = Math.max(s.x0, Math.min(p.x, s.x1));
-    const nz = Math.max(s.z0, Math.min(p.z, s.z1));
-    const dx = p.x - nx;
-    const dz = p.z - nz;
+    if (!blocksBody(s, y)) continue;
+    const nearX = Math.min(Math.max(p.x, s.x0), s.x1);
+    const nearZ = Math.min(Math.max(p.z, s.z0), s.z1);
+    let dx = p.x - nearX;
+    let dz = p.z - nearZ;
     const d2 = dx * dx + dz * dz;
     if (d2 >= r * r) continue;
     if (d2 > 1e-9) {
-      const d = Math.sqrt(d2);
-      p.x = nx + (dx / d) * r;
-      p.z = nz + (dz / d) * r;
-    } else {
-      // Centre inside the box: leave by the shallowest face.
-      const left = p.x - s.x0;
-      const right = s.x1 - p.x;
-      const top = p.z - s.z0;
-      const bottom = s.z1 - p.z;
-      const m = Math.min(left, right, top, bottom);
-      if (m === left) p.x = s.x0 - r;
-      else if (m === right) p.x = s.x1 + r;
-      else if (m === top) p.z = s.z0 - r;
-      else p.z = s.z1 + r;
+      const inv = r / Math.sqrt(d2);
+      p.x = nearX + dx * inv;
+      p.z = nearZ + dz * inv;
+      continue;
     }
+    // The centre is inside the box footprint: exit through the face that
+    // costs the least travel.
+    const exits = [
+      { cost: p.x - s.x0, apply: () => { p.x = s.x0 - r; } },
+      { cost: s.x1 - p.x, apply: () => { p.x = s.x1 + r; } },
+      { cost: p.z - s.z0, apply: () => { p.z = s.z0 - r; } },
+      { cost: s.z1 - p.z, apply: () => { p.z = s.z1 + r; } },
+    ];
+    exits.sort((a, b) => a.cost - b.cost)[0].apply();
+    dx = 0;
+    dz = 0;
   }
   return p;
 }
 
-// Move a body: integrate horizontal velocity for dt, resolve collisions,
-// then settle the feet on the ground. `body` is {x, y, z, vx, vz, vy,
-// grounded}. Gravity and jumping live in the callers; this only keeps the
-// body out of walls and on the floor.
+// Advance a body one tick: slide along x, then z (axis separation is what
+// lets bodies slip along container faces instead of sticking), then rest
+// the feet on the ground. Gravity and jump impulses are the caller's job;
+// body is { x, y, z, vx, vy, vz, grounded }.
 export function moveBody(body, dt) {
   body.x += body.vx * dt;
   collideCircle(body, body.y, 0.35);
   body.z += body.vz * dt;
   collideCircle(body, body.y, 0.35);
-  const g = groundHeightAt(body.x, body.z, body.y);
-  if (body.vy <= 0 && body.y <= g) {
-    body.y = g;
+
+  const floor = groundHeightAt(body.x, body.z, body.y);
+  if (body.vy <= 0 && body.y <= floor) {
+    body.y = floor;
     body.vy = 0;
     body.grounded = true;
-  } else if (body.y > g + 0.001) {
-    body.grounded = false;
   } else {
-    body.grounded = true;
+    body.grounded = body.y <= floor + 0.001;
   }
 }
 
-// Ray vs every solid (3D slab test). o and d are {x, y, z}; d need not be
-// normalised but dist is measured in its units. Returns the nearest hit
-// { dist, x, y, z, nx, ny, nz } or null.
+// One axis of the slab test. Returns [tNear, tFar, nearSign] or null when
+// the ray runs parallel outside the slab.
+function slab(o, d, lo, hi) {
+  if (Math.abs(d) < 1e-9) {
+    return o < lo || o > hi ? null : [-Infinity, Infinity, 0];
+  }
+  const inv = 1 / d;
+  let tA = (lo - o) * inv;
+  let tB = (hi - o) * inv;
+  let sign = -Math.sign(d);
+  if (tA > tB) {
+    const t = tA;
+    tA = tB;
+    tB = t;
+    sign = -sign;
+  }
+  return [tA, tB, sign];
+}
+
+// Cast a ray against every solid. o and d are {x, y, z}; the returned
+// dist is measured in units of d (normalise d to get metres). The hit
+// carries the entry point and the face normal.
 export function raycastWorld(o, d, maxDist) {
-  let best = null;
+  let hit = null;
   for (const s of SOLIDS) {
-    let tmin = 0;
-    let tmax = maxDist;
+    const sx = slab(o.x, d.x, s.x0, s.x1);
+    if (!sx) continue;
+    const sy = slab(o.y, d.y, s.y0, s.y1);
+    if (!sy) continue;
+    const sz = slab(o.z, d.z, s.z0, s.z1);
+    if (!sz) continue;
+
+    let tNear = 0;
     let axis = -1;
     let sign = 0;
-    // X slab
-    if (Math.abs(d.x) < 1e-9) {
-      if (o.x < s.x0 || o.x > s.x1) continue;
-    } else {
-      let t1 = (s.x0 - o.x) / d.x;
-      let t2 = (s.x1 - o.x) / d.x;
-      let sg = -1;
-      if (t1 > t2) { const t = t1; t1 = t2; t2 = t; sg = 1; }
-      if (t1 > tmin) { tmin = t1; axis = 0; sign = sg; }
-      tmax = Math.min(tmax, t2);
-      if (tmin > tmax) continue;
+    const axes = [sx, sy, sz];
+    for (let i = 0; i < 3; i++) {
+      if (axes[i][0] > tNear) {
+        tNear = axes[i][0];
+        axis = i;
+        sign = axes[i][2];
+      }
     }
-    // Y slab
-    if (Math.abs(d.y) < 1e-9) {
-      if (o.y < s.y0 || o.y > s.y1) continue;
-    } else {
-      let t1 = (s.y0 - o.y) / d.y;
-      let t2 = (s.y1 - o.y) / d.y;
-      let sg = -1;
-      if (t1 > t2) { const t = t1; t1 = t2; t2 = t; sg = 1; }
-      if (t1 > tmin) { tmin = t1; axis = 1; sign = sg; }
-      tmax = Math.min(tmax, t2);
-      if (tmin > tmax) continue;
-    }
-    // Z slab
-    if (Math.abs(d.z) < 1e-9) {
-      if (o.z < s.z0 || o.z > s.z1) continue;
-    } else {
-      let t1 = (s.z0 - o.z) / d.z;
-      let t2 = (s.z1 - o.z) / d.z;
-      let sg = -1;
-      if (t1 > t2) { const t = t1; t1 = t2; t2 = t; sg = 1; }
-      if (t1 > tmin) { tmin = t1; axis = 2; sign = sg; }
-      tmax = Math.min(tmax, t2);
-      if (tmin > tmax) continue;
-    }
-    if (axis < 0 || tmin > maxDist) continue;
-    if (!best || tmin < best.dist) {
-      best = {
-        dist: tmin,
-        x: o.x + d.x * tmin,
-        y: o.y + d.y * tmin,
-        z: o.z + d.z * tmin,
-        nx: axis === 0 ? sign : 0,
-        ny: axis === 1 ? sign : 0,
-        nz: axis === 2 ? sign : 0,
-      };
-    }
+    const tFar = Math.min(sx[1], sy[1], sz[1], maxDist);
+    if (axis < 0 || tNear > tFar || tNear > maxDist) continue;
+    if (hit && tNear >= hit.dist) continue;
+    hit = {
+      dist: tNear,
+      x: o.x + d.x * tNear,
+      y: o.y + d.y * tNear,
+      z: o.z + d.z * tNear,
+      nx: axis === 0 ? sign : 0,
+      ny: axis === 1 ? sign : 0,
+      nz: axis === 2 ? sign : 0,
+    };
   }
-  return best;
+  return hit;
 }
 
-// Is the straight line from a to b (both {x, y, z}) free of world geometry?
+// True when nothing solid stands between two points.
 export function lineOfSight(a, b) {
   const d = { x: b.x - a.x, y: b.y - a.y, z: b.z - a.z };
-  const dist = Math.hypot(d.x, d.y, d.z);
-  if (dist < 1e-6) return true;
+  if (Math.hypot(d.x, d.y, d.z) < 1e-6) return true;
   const hit = raycastWorld(a, d, 1);
   return hit === null || hit.dist >= 0.999;
 }

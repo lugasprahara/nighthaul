@@ -4,8 +4,9 @@ A round-based tactical FPS for the browser, built with three.js. Five
 Sentinels hold a container port at night; five Runners try to plant a
 breach charge on site A (Pier 7 warehouse dock) or site B (the Quay 3
 container rows). Short rounds, money for kills and round wins, a buy
-menu between rounds, and a side swap at half time. First team to seven
-rounds takes the port.
+menu between rounds, a halftime break where the sides swap, and
+overtime if twelve rounds end dead level. First team to seven rounds
+takes the port.
 
 Single player against bots. No build step, no network requests: open the
 page and play.
@@ -30,7 +31,7 @@ and play the round.
 | Space | Jump |
 | B | Buy menu (buy phase) |
 | E (hold) | Plant or defuse the charge |
-| 4 / 5 / 6 | Throw frag / flash / smoke grenade |
+| 3 / 4 / 5 (or F) | Throw frag / flash / smoke grenade |
 
 ## The game
 
@@ -44,11 +45,20 @@ and play the round.
   it (hold E). Elimination, detonation, defuse and time all end rounds.
 - **Economy.** $800 start, $300 a kill, win/loss bonuses that scale with
   consecutive losses. Rifles, armour and grenades come from the buy menu.
-- **Bots with senses.** Teammates and enemies route over a waypoint graph,
-  hold angles, react to gunfire and footsteps, lose you in smoke, push
-  last-known positions, plant, guard, retake and defuse. Their reaction
-  time and aim error are human-shaped: they miss more when you move.
-- **An original map.** Nighthaul is a night container port with two sites,
+- **Bots with roles and a plan.** Each round the bots take roles: the
+  charge carrier leads as ENTRY, a SUPPORT trails to trade their fights,
+  a LURKER works the far lane quietly and pinches late, while Sentinel
+  ANCHORS hold each site and a ROTATOR swings to trouble. The first
+  contact starts the team's execute clock — a beat later the hit commits
+  together. Bots route over a waypoint graph, hold angles, react to
+  gunfire and footsteps, lose you in smoke, push last-known positions,
+  plant, guard, retake and defuse. Their reaction time and aim error are
+  human-shaped: they miss more when you move.
+- **A match with a shape.** Twelve regulation rounds, first to seven.
+  Round 7 opens with a halftime phase — play freezes, the teams trade
+  ends and re-kit on a fresh $800, and the score so far is announced.
+  At 6–6 the match goes to overtime: fresh stakes, first to two rounds.
+- **An original map.** NIGHTHAUL is a night container port with two sites,
   a mid canyon cut by double doors, a dock link into the Pier 7 warehouse,
   and a service cut to B — lanes, corners and crossfires, drawn from one
   data file that also drives collision, bot navigation and the minimap.
@@ -68,9 +78,9 @@ and play the round.
   - `mapdata.js` the map as data: solids, sites, spawns, waypoint graph
   - `world.js` builds the three.js scene from the map data
   - `physics.js` circle-vs-box movement, ground heights, ray-vs-box tests
-  - `player.js` the human controller and viewmodel
-  - `bots.js` bot bodies and brains (perception, routes, combat)
-  - `match.js` rounds, phases, economy, the charge, win rules
+  - `player.js` the human controller, the shared firing routine, viewmodel
+  - `bots.js` bot bodies and brains (roles, team calls, perception, combat)
+  - `match.js` rounds, phases (buy/live/halftime/overtime), economy, the charge
   - `weapons.js` weapon table and the spread/damage model
   - `grenades.js` thrown grenades: frag, flash, smoke
   - `fx.js` pooled tracers, particles, muzzle flash, smoke clouds
