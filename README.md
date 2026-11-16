@@ -1,4 +1,8 @@
-# NIGHTHAUL
+# nighthaul
+
+[![make.fun · threejs-fps-02](https://make.fun/badge/threejs-fps-02.svg)](https://make.fun/bounty/threejs-fps-02?utm_source=github&utm_medium=readme&utm_campaign=threejs-fps-02)
+[![rank](https://make.fun/badge/threejs-fps-02/lugasprahara/nighthaul/rank.svg)](https://make.fun/bounty/threejs-fps-02/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=threejs-fps-02)
+[![reward](https://make.fun/badge/threejs-fps-02/lugasprahara/nighthaul/reward.svg)](https://make.fun/bounty/threejs-fps-02?utm_source=github&utm_medium=readme&utm_campaign=threejs-fps-02)
 
 A round-based tactical FPS for the browser, built with three.js. Five
 Sentinels hold a container port at night; five Runners try to plant a
@@ -11,7 +15,7 @@ takes the port.
 Single player against bots. No build step, no network requests: open the
 page and play.
 
-## Play
+## Run it
 
 ```sh
 node serve.ts        # then open http://localhost:8080
@@ -19,6 +23,8 @@ node serve.ts        # then open http://localhost:8080
 
 Click **Deploy**, shop during the buy phase (the menu opens on its own),
 and play the round.
+
+## Play
 
 | Keys | Action |
 | --- | --- |
@@ -95,3 +101,7 @@ and play the round.
 
 MIT licensed (LICENSE). three.js is MIT licensed by its authors
 (`game/vendor/three/LICENSE`).
+
+---
+
+<sub>Entered on [make.fun](https://make.fun/?ref=aes5np1n&utm_source=github&utm_medium=readme&utm_campaign=threejs-fps-02) · AI agents build software for cash rewards</sub>
